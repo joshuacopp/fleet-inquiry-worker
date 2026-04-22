@@ -6,8 +6,10 @@
 
 const TABLE_LOCATIONS = "pricing_simple";
 const TABLE_PACKAGES = "pricing_simple_resolved";
+const TABLE_LOCATIONS_META = "locations";
 const CACHE_TTL = 300;
 const STALE_TTL = 86400;
+const FIVESTAR_RADIUS_MI = 25;
 
 export default {
   async fetch(request, env, ctx) {
@@ -83,6 +85,9 @@ async function handleFindLocations(request, env, ctx) {
       return jsonResponse(500, { error: "Unable to load locations. Please try again later." });
     }
 
+    // Fetch fivestar metadata (site_numbers flagged as fivestar)
+    const fivestarSites = await getFivestarSiteNumbers(env, ctx);
+
     // Determine user coordinates — either from provided coords or by geocoding the address
     let userCoords = null;
 
@@ -113,10 +118,12 @@ async function handleFindLocations(request, env, ctx) {
         location_pretty: loc.location_pretty,
         address: loc.address,
         distance: loc.distance === Infinity ? null : Math.round(loc.distance * 10) / 10,
-        has_full_service: loc.has_full_service
+        has_full_service: loc.has_full_service,
+        site_number: loc.site_number,
+        fivestar: loc.site_number != null && fivestarSites.has(Number(loc.site_number))
       }));
 
-      return jsonResponse(200, { locations: nearest, geocoded: true });
+      return jsonResponse(200, { locations: nearest, geocoded: true, user_coords: userCoords });
     }
 
     // Fallback: return all locations sorted alphabetically (no Maps API key)
@@ -127,10 +134,12 @@ async function handleFindLocations(request, env, ctx) {
         location_pretty: loc.location_pretty,
         address: loc.address,
         distance: null,
-        has_full_service: loc.has_full_service
+        has_full_service: loc.has_full_service,
+        site_number: loc.site_number,
+        fivestar: loc.site_number != null && fivestarSites.has(Number(loc.site_number))
       }));
 
-    return jsonResponse(200, { locations: allLocs, geocoded: false });
+    return jsonResponse(200, { locations: allLocs, geocoded: false, user_coords: null });
 
   } catch (error) {
     console.error("handleFindLocations error:", error);
@@ -140,7 +149,8 @@ async function handleFindLocations(request, env, ctx) {
 
 async function handleFleetPackages(request, env, ctx) {
   try {
-    const { location_code } = await request.json();
+    const body = await request.json();
+    const { location_code, user_lat, user_lng } = body;
     if (!location_code) {
       return jsonResponse(400, { error: "Missing location." });
     }
@@ -153,8 +163,7 @@ async function handleFleetPackages(request, env, ctx) {
     // Group packages by service type based on pkg name patterns
     const groups = {
       express_exterior: [],
-      full_service: [],
-      professional_detailing: []
+      full_service: []
     };
 
     for (const r of packages) {
@@ -166,9 +175,10 @@ async function handleFleetPackages(request, env, ctx) {
         sort: Number(r.sort) || 99
       };
 
-      if (pkg.includes("detail")) {
-        groups.professional_detailing.push(item);
-      } else if (pkg.includes("fs")) {
+      // Detailing handled separately via fivestar logic; skip here
+      if (pkg.includes("detail")) continue;
+
+      if (pkg.includes("fs")) {
         groups.full_service.push(item);
       } else {
         groups.express_exterior.push(item);
@@ -180,11 +190,88 @@ async function handleFleetPackages(request, env, ctx) {
       groups[key].sort((a, b) => a.sort - b.sort);
     }
 
-    return jsonResponse(200, { groups });
+    // Determine fivestar availability
+    // Logic: if selected location is itself fivestar → use it. Otherwise find nearest
+    // fivestar within FIVESTAR_RADIUS_MI miles of user coords.
+    const fivestarInfo = await resolveFivestarOption({
+      selectedLocationCode: location_code,
+      userCoords: (typeof user_lat === "number" && typeof user_lng === "number")
+        ? { lat: user_lat, lng: user_lng }
+        : null,
+      env,
+      ctx
+    });
+
+    return jsonResponse(200, { groups, fivestar: fivestarInfo });
 
   } catch (error) {
     console.error("handleFleetPackages error:", error);
     return jsonResponse(500, { error: "Server error." });
+  }
+}
+
+// Returns { available: boolean, location_pretty, location_code, distance, same_as_selected }
+async function resolveFivestarOption({ selectedLocationCode, userCoords, env, ctx }) {
+  try {
+    const [locations, fivestarSites] = await Promise.all([
+      getAllLocations(env, ctx),
+      getFivestarSiteNumbers(env, ctx)
+    ]);
+
+    const selected = locations.find(l =>
+      (l.location_code || "").toLowerCase() === (selectedLocationCode || "").toLowerCase()
+    );
+
+    // Case 1: selected location is itself fivestar
+    if (selected && selected.site_number != null && fivestarSites.has(Number(selected.site_number))) {
+      return {
+        available: true,
+        location_code: selected.location_code,
+        location_pretty: selected.location_pretty,
+        distance: 0,
+        same_as_selected: true
+      };
+    }
+
+    // Case 2: need to find nearest fivestar within radius
+    // Requires user coordinates and Google Maps
+    if (!userCoords || !env.GOOGLE_MAPS_API_KEY) {
+      return { available: false };
+    }
+
+    const fivestarLocs = locations.filter(l =>
+      l.site_number != null && fivestarSites.has(Number(l.site_number))
+    );
+
+    if (fivestarLocs.length === 0) {
+      return { available: false };
+    }
+
+    const locsWithDistance = await Promise.all(
+      fivestarLocs.map(async (loc) => {
+        const locCoords = await geocodeAddress(loc.address, env.GOOGLE_MAPS_API_KEY);
+        if (!locCoords) return { ...loc, distance: Infinity };
+        return { ...loc, distance: haversineDistance(userCoords, locCoords) };
+      })
+    );
+
+    locsWithDistance.sort((a, b) => a.distance - b.distance);
+    const nearest = locsWithDistance[0];
+
+    if (!nearest || nearest.distance === Infinity || nearest.distance > FIVESTAR_RADIUS_MI) {
+      return { available: false };
+    }
+
+    return {
+      available: true,
+      location_code: nearest.location_code,
+      location_pretty: nearest.location_pretty,
+      distance: Math.round(nearest.distance * 10) / 10,
+      same_as_selected: false
+    };
+  } catch (error) {
+    console.error("resolveFivestarOption error:", error);
+    return { available: false };
   }
 }
 
@@ -200,9 +287,11 @@ async function handleFleetSubmit(request, env, ctx) {
       }
     }
 
-    // Must select at least one package
-    if (!Array.isArray(data.selected_packages) || data.selected_packages.length === 0) {
-      return jsonResponse(400, { error: "Please select at least one package." });
+    // Must select at least one package OR request detailing
+    const hasPackages = Array.isArray(data.selected_packages) && data.selected_packages.length > 0;
+    const detailingRequested = data.detailing_requested === true;
+    if (!hasPackages && !detailingRequested) {
+      return jsonResponse(400, { error: "Please select at least one package or request a detailing quote." });
     }
 
     // Basic email validation
@@ -210,14 +299,15 @@ async function handleFleetSubmit(request, env, ctx) {
       return jsonResponse(400, { error: "Please enter a valid email address." });
     }
 
-    // Determine service_type from selected package names
-    let hasExpress = false, hasFullServe = false, hasDetail = false;
-    for (const pkg of data.selected_packages) {
+    // Determine service_type from selected package names + detailing flag
+    let hasExpress = false, hasFullServe = false;
+    const pkgList = data.selected_packages || [];
+    for (const pkg of pkgList) {
       const lower = (pkg || "").toLowerCase();
-      if (lower.includes("detail")) hasDetail = true;
-      else if (lower.includes("fs")) hasFullServe = true;
+      if (lower.includes("fs")) hasFullServe = true;
       else hasExpress = true;
     }
+    const hasDetail = detailingRequested;
     const typesCount = (hasExpress ? 1 : 0) + (hasFullServe ? 1 : 0) + (hasDetail ? 1 : 0);
     let serviceType = "mixed";
     if (typesCount === 1) {
@@ -229,6 +319,14 @@ async function handleFleetSubmit(request, env, ctx) {
     const ipAddress = request.headers.get("CF-Connecting-IP") || "Unknown";
     const userAgent = request.headers.get("User-Agent") || "Unknown";
 
+    // Build packages string; append detailing info if requested
+    let packagesStr = data.packages_pretty || pkgList.join(", ") || "";
+    if (detailingRequested) {
+      const dLoc = data.detailing_location_pretty || "";
+      const dSuffix = dLoc ? `Professional Detailing (${dLoc})` : "Professional Detailing";
+      packagesStr = packagesStr ? `${packagesStr} | ${dSuffix}` : dSuffix;
+    }
+
     const submission = {
       company: data.company.trim(),
       name: data.name.trim(),
@@ -238,7 +336,7 @@ async function handleFleetSubmit(request, env, ctx) {
       location_code: data.location_code,
       location_pretty: data.location_pretty || data.location_code,
       service_type: serviceType,
-      packages: data.packages_pretty || data.selected_packages.join(", "),
+      packages: packagesStr,
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
       user_agent: userAgent,
@@ -282,10 +380,17 @@ async function getAllLocations(env, ctx) {
     if (!code) continue;
 
     if (!locationMap.has(code)) {
+      // Parse site number once per location
+      let siteNum = null;
+      if (row.site !== undefined && row.site !== null) {
+        const n = Number(row.site);
+        if (!Number.isNaN(n)) siteNum = n;
+      }
       locationMap.set(code, {
         location_code: code,
         location_pretty: row.location_pretty || code,
         address: row.address || "",
+        site_number: siteNum,
         has_full_service: false
       });
     }
@@ -311,11 +416,11 @@ async function getCachedPricingData(env, ctx) {
       return await cached.json();
     }
     if (cacheAge < STALE_TTL * 1000) {
-      ctx.waitUntil(fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS, "location_pretty,location_code,pkg,single,address,sort", null));
+      ctx.waitUntil(fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS, "location_pretty,location_code,pkg,single,address,sort,site", null));
       return await cached.json();
     }
   }
-  return await fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS, "location_pretty,location_code,pkg,single,address,sort", cached);
+  return await fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS, "location_pretty,location_code,pkg,single,address,sort,site", cached);
 }
 
 async function getCachedPackageData(env, ctx) {
@@ -334,6 +439,36 @@ async function getCachedPackageData(env, ctx) {
     }
   }
   return await fetchAndCacheData(env, cache, cacheKey, TABLE_PACKAGES, "location_code,pkg,pretty_pkg,single,sort", cached);
+}
+
+async function getCachedLocationsMeta(env, ctx) {
+  const cache = caches.default;
+  const cacheKey = new Request("https://internal-cache/fleet_locations_meta");
+  const cached = await cache.match(cacheKey);
+
+  if (cached) {
+    const cacheAge = Date.now() - new Date(cached.headers.get("date")).getTime();
+    if (cacheAge < CACHE_TTL * 1000) {
+      return await cached.json();
+    }
+    if (cacheAge < STALE_TTL * 1000) {
+      ctx.waitUntil(fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS_META, "site_number,site,location,fivestar", null));
+      return await cached.json();
+    }
+  }
+  return await fetchAndCacheData(env, cache, cacheKey, TABLE_LOCATIONS_META, "site_number,site,location,fivestar", cached);
+}
+
+// Returns Set<number> of site_numbers where at least one row has fivestar = true
+async function getFivestarSiteNumbers(env, ctx) {
+  const rows = await getCachedLocationsMeta(env, ctx);
+  const set = new Set();
+  for (const r of rows) {
+    if (r.fivestar && r.site_number !== null && r.site_number !== undefined) {
+      set.add(Number(r.site_number));
+    }
+  }
+  return set;
 }
 
 async function fetchAndCacheData(env, cache, cacheKey, table, select, fallback) {
@@ -1102,6 +1237,9 @@ function renderFleetForm() {
         var selectedPackages = [];
         var allPackagesMap = {}; // pkg -> { pkg, pretty_pkg, price, group }
         var locationData = [];
+        var userCoords = null; // Captured from /api/find-locations response
+        var detailingRequested = false;
+        var detailingLocation = null; // { location_code, location_pretty, distance, same_as_selected }
 
         // Elements
         var companyInput = document.getElementById('company');
@@ -1202,6 +1340,8 @@ function renderFleetForm() {
             // Reset downstream selections
             selectedLocation = null;
             selectedPackages = [];
+            detailingRequested = false;
+            detailingLocation = null;
             packageSection.classList.remove('show');
 
             locationResults.classList.add('show');
@@ -1222,6 +1362,7 @@ function renderFleetForm() {
                 }
 
                 locationData = result.data.locations;
+                userCoords = result.data.user_coords || null;
                 renderLocationCards(result.data.locations, result.data.geocoded);
             })
             .catch(function() {
@@ -1276,6 +1417,8 @@ function renderFleetForm() {
                             changeLink.remove();
                             selectedLocation = null;
                             selectedPackages = [];
+                            detailingRequested = false;
+                            detailingLocation = null;
                             packageSection.classList.remove('show');
                             validateForm();
                         });
@@ -1294,14 +1437,22 @@ function renderFleetForm() {
 
         function loadPackages(locationCode) {
             allPackagesMap = {};
+            detailingRequested = false;
+            detailingLocation = null;
             packageSection.classList.remove('show');
             packageContent.innerHTML = '<div class="loading">Loading packages...</div>';
             packageSection.classList.add('show');
 
+            var payload = { location_code: locationCode };
+            if (userCoords) {
+                payload.user_lat = userCoords.lat;
+                payload.user_lng = userCoords.lng;
+            }
+
             fetch('/api/fleet-packages', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ location_code: locationCode })
+                body: JSON.stringify(payload)
             })
             .then(function(resp) { return resp.json(); })
             .then(function(data) {
@@ -1326,21 +1477,21 @@ function renderFleetForm() {
                     totalPackages += data.groups.full_service.length;
                 }
 
-                // Professional Detailing
-                if (data.groups.professional_detailing && data.groups.professional_detailing.length > 0) {
-                    groupsHtml += renderGroup('Professional Detailing', null, data.groups.professional_detailing, 'detail');
-                    totalPackages += data.groups.professional_detailing.length;
+                // Professional Detailing (fivestar) — single checkbox if available in range
+                if (data.fivestar && data.fivestar.available) {
+                    detailingLocation = data.fivestar;
+                    groupsHtml += renderDetailingGroup(data.fivestar);
                 }
 
-                if (totalPackages === 0) {
+                if (totalPackages === 0 && !(data.fivestar && data.fivestar.available)) {
                     packageContent.innerHTML = '<div class="detailing-note">No packages available for this location.</div>';
                     return;
                 }
 
                 packageContent.innerHTML = groupsHtml;
 
-                // Click handlers for package checkboxes
-                packageContent.querySelectorAll('.package-checkbox').forEach(function(box) {
+                // Click handlers for package checkboxes (excluding detailing which has its own handler)
+                packageContent.querySelectorAll('.package-checkbox:not(.detailing-checkbox)').forEach(function(box) {
                     box.addEventListener('click', function(e) {
                         if (e.target.tagName === 'INPUT') return;
                         var cb = this.querySelector('input[type="checkbox"]');
@@ -1354,10 +1505,49 @@ function renderFleetForm() {
                         updateSelectedPackages();
                     });
                 });
+
+                // Click handler for detailing checkbox
+                var detailingBox = packageContent.querySelector('.detailing-checkbox');
+                if (detailingBox) {
+                    detailingBox.addEventListener('click', function(e) {
+                        if (e.target.tagName === 'INPUT') return;
+                        var cb = this.querySelector('input[type="checkbox"]');
+                        cb.checked = !cb.checked;
+                        this.classList.toggle('checked', cb.checked);
+                        detailingRequested = cb.checked;
+                        validateForm();
+                    });
+                    detailingBox.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+                        detailingBox.classList.toggle('checked', this.checked);
+                        detailingRequested = this.checked;
+                        validateForm();
+                    });
+                }
             })
             .catch(function() {
                 packageContent.innerHTML = '<div class="error-message show">Error loading packages.</div>';
             });
+        }
+
+        function renderDetailingGroup(fivestar) {
+            var html = '<div class="package-group">';
+            html += '<div class="package-group-header">Professional Detailing</div>';
+            var noteText;
+            if (fivestar.same_as_selected) {
+                noteText = 'Professional detailing is available at this location. A representative will contact you with pricing.';
+            } else {
+                noteText = 'Available at our ' + escHtml(fivestar.location_pretty) +
+                    ' location (' + fivestar.distance + ' mi away). A representative will contact you with pricing.';
+            }
+            html += '<div class="package-group-note">' + noteText + '</div>';
+            html += '<div class="package-checkboxes">' +
+                '<div class="package-checkbox detailing-checkbox">' +
+                    '<input type="checkbox" id="detailing-request">' +
+                    '<label for="detailing-request">Request detailing quote</label>' +
+                '</div>' +
+            '</div>';
+            html += '</div>';
+            return html;
         }
 
         function renderGroup(title, note, packages, groupKey) {
@@ -1397,7 +1587,7 @@ function renderFleetForm() {
             var phoneValid = phoneDigits.length === 10;
             var emailValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(emailInput.value.trim());
             var locationValid = selectedLocation !== null;
-            var packagesValid = selectedPackages.length > 0;
+            var packagesValid = selectedPackages.length > 0 || detailingRequested;
 
             // Show/hide errors only if field has content
             toggleError('err-company', !companyValid && companyInput.value.length > 0);
@@ -1434,7 +1624,10 @@ function renderFleetForm() {
                 location_code: selectedLocation.location_code,
                 location_pretty: selectedLocation.location_pretty,
                 selected_packages: selectedPackages,
-                packages_pretty: prettyNames.join(', ')
+                packages_pretty: prettyNames.join(', '),
+                detailing_requested: detailingRequested,
+                detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
+                detailing_location_code: detailingLocation ? detailingLocation.location_code : null
             };
 
             fetch('/api/fleet-submit', {
