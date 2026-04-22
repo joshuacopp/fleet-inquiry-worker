@@ -59,8 +59,14 @@ async function handle(request, env, ctx) {
 
 async function handleFindLocations(request, env, ctx) {
   try {
-    const { address } = await request.json();
-    if (!address || address.trim().length < 3) {
+    const body = await request.json();
+    const { address, lat, lng } = body;
+
+    // Must have either an address or coordinates
+    const hasAddress = address && address.trim().length >= 3;
+    const hasCoords = typeof lat === "number" && typeof lng === "number";
+
+    if (!hasAddress && !hasCoords) {
       return jsonResponse(400, { error: "Please enter a valid address or zip code." });
     }
 
@@ -77,14 +83,20 @@ async function handleFindLocations(request, env, ctx) {
       return jsonResponse(500, { error: "Unable to load locations. Please try again later." });
     }
 
-    // If Google Maps API key is configured, geocode and find nearest
-    if (env.GOOGLE_MAPS_API_KEY) {
-      const userCoords = await geocodeAddress(address, env.GOOGLE_MAPS_API_KEY);
+    // Determine user coordinates — either from provided coords or by geocoding the address
+    let userCoords = null;
+
+    if (hasCoords) {
+      userCoords = { lat, lng };
+    } else if (env.GOOGLE_MAPS_API_KEY) {
+      userCoords = await geocodeAddress(address, env.GOOGLE_MAPS_API_KEY);
       if (!userCoords) {
         return jsonResponse(400, { error: "Could not find that address. Please try again." });
       }
+    }
 
-      // Geocode all locations and calculate distances
+    // If we have user coordinates and a Maps API key, geocode all locations and find nearest
+    if (userCoords && env.GOOGLE_MAPS_API_KEY) {
       const locationsWithDistance = await Promise.all(
         locations.map(async (loc) => {
           const locCoords = await geocodeAddress(loc.address, env.GOOGLE_MAPS_API_KEY);
@@ -625,6 +637,40 @@ function renderFleetForm() {
             transform: none;
         }
 
+        .btn-use-location {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            margin-top: 10px;
+            padding: 12px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            background: white;
+            color: #3b82f6;
+            border: 2px solid #3b82f6;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+
+        .btn-use-location:hover {
+            background: #eff6ff;
+        }
+
+        .btn-use-location:disabled {
+            color: #94a3b8;
+            border-color: #cbd5e1;
+            cursor: not-allowed;
+            background: #f8fafc;
+        }
+
+        .btn-use-location .pin-icon {
+            font-size: 16px;
+        }
+
         .btn-submit {
             width: 100%;
             padding: 16px;
@@ -953,6 +999,9 @@ function renderFleetForm() {
                         <input type="text" id="address" placeholder="Enter your address or zip code">
                         <button type="button" class="btn btn-find" id="findBtn">Find</button>
                     </div>
+                    <button type="button" class="btn-use-location" id="useLocationBtn">
+                        <span class="pin-icon">&#128205;</span> Use My Location
+                    </button>
                     <div class="error-message" id="err-address">Please enter an address or zip code.</div>
                 </div>
 
@@ -1018,6 +1067,7 @@ function renderFleetForm() {
         var packageContent = document.getElementById('packageContent');
         var submitBtn = document.getElementById('submitBtn');
         var successOverlay = document.getElementById('successOverlay');
+        var useLocationBtn = document.getElementById('useLocationBtn');
 
         // Phone formatting
         phoneInput.addEventListener('input', function() {
@@ -1039,11 +1089,14 @@ function renderFleetForm() {
             input.addEventListener('blur', validateForm);
         });
 
-        // Find locations
+        // Find locations (by typed address)
         findBtn.addEventListener('click', findLocations);
         addressInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') findLocations();
         });
+
+        // Use My Location (browser geolocation)
+        useLocationBtn.addEventListener('click', useMyLocation);
 
         function findLocations() {
             var address = addressInput.value.trim();
@@ -1052,7 +1105,50 @@ function renderFleetForm() {
                 return;
             }
             hideError('err-address');
+            searchLocations({ address: address });
+        }
 
+        function useMyLocation() {
+            if (!navigator.geolocation) {
+                alert('Your browser does not support location detection. Please enter an address instead.');
+                return;
+            }
+
+            hideError('err-address');
+            useLocationBtn.disabled = true;
+            useLocationBtn.innerHTML = '<span class="pin-icon">&#128205;</span> Getting your location...';
+
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    searchLocations({
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude
+                    });
+                    useLocationBtn.disabled = false;
+                    useLocationBtn.innerHTML = '<span class="pin-icon">&#128205;</span> Use My Location';
+                },
+                function(error) {
+                    var msg = 'Could not get your location. Please enter an address instead.';
+                    if (error.code === error.PERMISSION_DENIED) {
+                        msg = 'Location access was denied. Please enter an address instead.';
+                    } else if (error.code === error.POSITION_UNAVAILABLE) {
+                        msg = 'Your location is unavailable. Please enter an address instead.';
+                    } else if (error.code === error.TIMEOUT) {
+                        msg = 'Location request timed out. Please enter an address instead.';
+                    }
+                    alert(msg);
+                    useLocationBtn.disabled = false;
+                    useLocationBtn.innerHTML = '<span class="pin-icon">&#128205;</span> Use My Location';
+                },
+                {
+                    enableHighAccuracy: false,
+                    timeout: 10000,
+                    maximumAge: 300000
+                }
+            );
+        }
+
+        function searchLocations(payload) {
             // Reset downstream selections
             selectedLocation = null;
             selectedService = null;
@@ -1068,7 +1164,7 @@ function renderFleetForm() {
             fetch('/api/find-locations', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ address: address })
+                body: JSON.stringify(payload)
             })
             .then(function(resp) { return resp.json().then(function(data) { return { ok: resp.ok, data: data }; }); })
             .then(function(result) {
