@@ -49,7 +49,7 @@ async function handle(request, env, ctx) {
 
   // Main fleet form page
   if (path === "fleet" || path === "") {
-    return new Response(renderFleetForm(), {
+    return new Response(renderFleetForm(env), {
       headers: { "content-type": "text/html; charset=utf-8" }
     });
   }
@@ -278,6 +278,18 @@ async function resolveFivestarOption({ selectedLocationCode, userCoords, env, ct
 async function handleFleetSubmit(request, env, ctx) {
   try {
     const data = await request.json();
+
+    // Turnstile verification — must pass before any other processing
+    if (env.TURNSTILE_SECRET_KEY) {
+      if (!data.turnstile_token) {
+        return jsonResponse(400, { error: "Please complete the security check." });
+      }
+      const clientIp = request.headers.get("CF-Connecting-IP") || "";
+      const verified = await verifyTurnstileToken(data.turnstile_token, env.TURNSTILE_SECRET_KEY, clientIp);
+      if (!verified) {
+        return jsonResponse(400, { error: "Security check failed. Please refresh the page and try again." });
+      }
+    }
 
     // Validate required fields
     const required = ["company", "name", "phone", "email", "location_code"];
@@ -512,6 +524,30 @@ async function fetchAndCacheData(env, cache, cacheKey, table, select, fallback) 
   }
 }
 
+/* ===================== Turnstile Verification ===================== */
+
+async function verifyTurnstileToken(token, secretKey, clientIp) {
+  try {
+    const formData = new URLSearchParams();
+    formData.append("secret", secretKey);
+    formData.append("response", token);
+    if (clientIp) formData.append("remoteip", clientIp);
+
+    const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      body: formData
+    });
+    const result = await response.json();
+    if (!result.success) {
+      console.warn("Turnstile verification failed:", result["error-codes"]);
+    }
+    return result.success === true;
+  } catch (error) {
+    console.error("Turnstile verification error:", error);
+    return false;
+  }
+}
+
 /* ===================== Google Maps Helpers ===================== */
 
 async function geocodeAddress(address, apiKey) {
@@ -591,7 +627,8 @@ function escHtml(s) {
 
 /* ===================== Render Fleet Form ===================== */
 
-function renderFleetForm() {
+function renderFleetForm(env) {
+  const turnstileSiteKey = (env && env.TURNSTILE_SITE_KEY) ? env.TURNSTILE_SITE_KEY : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -599,6 +636,7 @@ function renderFleetForm() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/favicon-32x32.png">
     <title>Splash Car Wash - Fleet Pricing Inquiry</title>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <style>
         * {
             margin: 0;
@@ -889,6 +927,13 @@ function renderFleetForm() {
             cursor: not-allowed;
             transform: none;
             box-shadow: none;
+        }
+
+        .turnstile-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 18px;
+            margin-bottom: 6px;
         }
 
         .location-results {
@@ -1297,6 +1342,11 @@ function renderFleetForm() {
                     </div>
                 </div>
 
+                <!-- Turnstile widget -->
+                <div class="turnstile-container">
+                    <div id="turnstile-widget"></div>
+                </div>
+
                 <!-- Submit -->
                 <button type="button" class="btn-submit" id="submitBtn" disabled>Submit Inquiry</button>
             </div>
@@ -1324,6 +1374,9 @@ function renderFleetForm() {
         var userCoords = null; // Captured from /api/find-locations response
         var detailingRequested = false;
         var detailingLocation = null; // { location_code, location_pretty, distance, same_as_selected }
+        var turnstileToken = null;
+        var turnstileWidgetId = null;
+        var TURNSTILE_SITE_KEY = "${turnstileSiteKey}";
 
         // Elements
         var companyInput = document.getElementById('company');
@@ -1343,6 +1396,39 @@ function renderFleetForm() {
         var submitBtn = document.getElementById('submitBtn');
         var successOverlay = document.getElementById('successOverlay');
         var useLocationBtn = document.getElementById('useLocationBtn');
+
+        // Initialize Turnstile widget once the script loads
+        function initTurnstile() {
+            if (!TURNSTILE_SITE_KEY) {
+                console.warn('Turnstile site key not configured; skipping.');
+                return;
+            }
+            if (typeof window.turnstile === 'undefined') {
+                // Script not loaded yet — retry shortly
+                setTimeout(initTurnstile, 200);
+                return;
+            }
+            try {
+                turnstileWidgetId = window.turnstile.render('#turnstile-widget', {
+                    sitekey: TURNSTILE_SITE_KEY,
+                    callback: function(token) {
+                        turnstileToken = token;
+                        validateForm();
+                    },
+                    'expired-callback': function() {
+                        turnstileToken = null;
+                        validateForm();
+                    },
+                    'error-callback': function() {
+                        turnstileToken = null;
+                        validateForm();
+                    }
+                });
+            } catch (e) {
+                console.error('Turnstile render error:', e);
+            }
+        }
+        initTurnstile();
 
         // Phone formatting
         phoneInput.addEventListener('input', function() {
@@ -1691,6 +1777,8 @@ function renderFleetForm() {
             var washesCount = parseInt(washesPerMonthInput.value, 10);
             var washesValid = !isNaN(washesCount) && washesCount >= 1;
 
+            var turnstileValid = !!turnstileToken;
+
             // Show/hide errors only if field has content
             toggleError('err-company', !companyValid && companyInput.value.length > 0);
             toggleError('err-name', !nameValid && nameInput.value.length > 0);
@@ -1700,7 +1788,7 @@ function renderFleetForm() {
             toggleError('err-washes', !washesValid && washesPerMonthInput.value.length > 0);
 
             var formValid = companyValid && nameValid && phoneValid && emailValid &&
-                locationValid && packagesValid && vehiclesValid && washesValid;
+                locationValid && packagesValid && vehiclesValid && washesValid && turnstileValid;
             submitBtn.disabled = !formValid;
             return formValid;
         }
@@ -1745,7 +1833,8 @@ function renderFleetForm() {
                 detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
                 detailing_location_code: detailingLocation ? detailingLocation.location_code : null,
                 number_of_vehicles: parseInt(vehicleCountInput.value, 10),
-                anticipated_washes_per_month: parseInt(washesPerMonthInput.value, 10)
+                anticipated_washes_per_month: parseInt(washesPerMonthInput.value, 10),
+                turnstile_token: turnstileToken
             };
 
             fetch('/api/fleet-submit', {
@@ -1761,14 +1850,24 @@ function renderFleetForm() {
                     alert(result.data.error || 'Submission failed. Please try again.');
                     submitBtn.disabled = false;
                     submitBtn.textContent = 'Submit Inquiry';
+                    resetTurnstile();
                 }
             })
             .catch(function() {
                 alert('Network error. Please try again.');
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Submit Inquiry';
+                resetTurnstile();
             });
         });
+
+        function resetTurnstile() {
+            turnstileToken = null;
+            if (turnstileWidgetId !== null && typeof window.turnstile !== 'undefined') {
+                try { window.turnstile.reset(turnstileWidgetId); } catch (e) {}
+            }
+            validateForm();
+        }
 
         // Helpers
         function showError(id) {
