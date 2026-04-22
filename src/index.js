@@ -523,6 +523,17 @@ function renderFleetForm() {
             padding: 30px 20px;
         }
 
+        .intro-description {
+            background: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 16px 18px;
+            margin-bottom: 24px;
+            color: #1e3a8a;
+            font-size: 14px;
+            line-height: 1.6;
+            border-radius: 6px;
+        }
+
         .form-group {
             margin-bottom: 20px;
         }
@@ -667,6 +678,24 @@ function renderFleetForm() {
             border-color: #3b82f6;
             background: #eff6ff;
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .location-card.hidden {
+            display: none;
+        }
+
+        .change-location-link {
+            color: #3b82f6;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: right;
+            padding: 8px 4px;
+            margin-top: 4px;
+        }
+
+        .change-location-link:hover {
+            text-decoration: underline;
         }
 
         .location-card .loc-name {
@@ -887,6 +916,11 @@ function renderFleetForm() {
             </div>
 
             <div class="form-content">
+                <!-- Intro description -->
+                <div class="intro-description">
+                    Splash believes in community, and works hard to build relationships with local not-for-profit organizations, government agencies and private businesses. To this end, we offer special money saving per-wash pricing to fleets, so you can spend more of your money where it matters most for your group. To get started saving with Splash, complete the form below for a personalized quote, and a call from one of our fleet specialists.
+                </div>
+
                 <!-- Company Info -->
                 <div class="form-group">
                     <label>Company Name <span class="required">*</span></label>
@@ -955,8 +989,7 @@ function renderFleetForm() {
             <div class="success-icon">&#10003;</div>
             <div class="success-title">Inquiry Submitted!</div>
             <div class="success-message">
-                Thank you for your interest in Splash Car Wash fleet services.
-                A representative will contact you shortly with pricing details.
+                Thank you for your interest in Splash Car Wash fleet services. You will receive an email with your personalized quote, and a representative will contact you shortly to answer any questions you may have.
             </div>
         </div>
     </div>
@@ -1073,8 +1106,41 @@ function renderFleetForm() {
             // Click handlers
             locationCards.querySelectorAll('.location-card').forEach(function(card) {
                 card.addEventListener('click', function() {
-                    locationCards.querySelectorAll('.location-card').forEach(function(c) { c.classList.remove('selected'); });
+                    var wasSelected = this.classList.contains('selected');
+
+                    // Reset and select this card
+                    locationCards.querySelectorAll('.location-card').forEach(function(c) {
+                        c.classList.remove('selected');
+                        c.classList.remove('hidden');
+                    });
                     this.classList.add('selected');
+
+                    // Hide all other cards
+                    locationCards.querySelectorAll('.location-card').forEach(function(c) {
+                        if (c !== this) c.classList.add('hidden');
+                    }, this);
+
+                    // Add a "change location" link if not already there
+                    var existingChangeLink = locationCards.querySelector('.change-location-link');
+                    if (!existingChangeLink) {
+                        var changeLink = document.createElement('div');
+                        changeLink.className = 'change-location-link';
+                        changeLink.textContent = 'Change location';
+                        changeLink.addEventListener('click', function() {
+                            locationCards.querySelectorAll('.location-card').forEach(function(c) {
+                                c.classList.remove('hidden');
+                                c.classList.remove('selected');
+                            });
+                            changeLink.remove();
+                            selectedLocation = null;
+                            selectedService = null;
+                            selectedPackages = [];
+                            serviceSection.classList.remove('show');
+                            packageSection.classList.remove('show');
+                            validateForm();
+                        });
+                        locationCards.appendChild(changeLink);
+                    }
 
                     var idx = parseInt(this.getAttribute('data-index'));
                     selectedLocation = locationData[idx];
