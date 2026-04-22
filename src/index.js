@@ -337,6 +337,10 @@ async function handleFleetSubmit(request, env, ctx) {
       location_pretty: data.location_pretty || data.location_code,
       service_type: serviceType,
       packages: packagesStr,
+      packages_detail: Array.isArray(data.packages_detail) ? data.packages_detail : null,
+      detailing_requested: detailingRequested,
+      detailing_location_code: detailingRequested ? (data.detailing_location_code || null) : null,
+      detailing_location_pretty: detailingRequested ? (data.detailing_location_pretty || null) : null,
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
       user_agent: userAgent,
@@ -1615,6 +1619,16 @@ function renderFleetForm() {
                 return info ? info.pretty_pkg : pkgKey;
             });
 
+            // Build structured detail array for each selected package (with prices)
+            var packagesDetail = selectedPackages.map(function(pkgKey) {
+                var info = allPackagesMap[pkgKey] || {};
+                return {
+                    pkg: pkgKey,
+                    pretty: info.pretty_pkg || pkgKey,
+                    single: info.price != null ? Number(info.price) : null
+                };
+            });
+
             var payload = {
                 company: companyInput.value.trim(),
                 name: nameInput.value.trim(),
@@ -1625,6 +1639,7 @@ function renderFleetForm() {
                 location_pretty: selectedLocation.location_pretty,
                 selected_packages: selectedPackages,
                 packages_pretty: prettyNames.join(', '),
+                packages_detail: packagesDetail,
                 detailing_requested: detailingRequested,
                 detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
                 detailing_location_code: detailingLocation ? detailingLocation.location_code : null
