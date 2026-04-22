@@ -140,40 +140,47 @@ async function handleFindLocations(request, env, ctx) {
 
 async function handleFleetPackages(request, env, ctx) {
   try {
-    const { location_code, service_type } = await request.json();
-    if (!location_code || !service_type) {
-      return jsonResponse(400, { error: "Missing location or service type." });
+    const { location_code } = await request.json();
+    if (!location_code) {
+      return jsonResponse(400, { error: "Missing location." });
     }
 
     const allData = await getCachedPackageData(env, ctx);
-    let packages = allData.filter(r =>
+    const packages = allData.filter(r =>
       (r.location_code || "").toLowerCase() === location_code.toLowerCase()
     );
 
-    // Filter by service type
-    if (service_type === "express_exterior") {
-      packages = packages.filter(r => {
-        const pkg = (r.pkg || "").toLowerCase();
-        return !pkg.includes("fs") && !pkg.includes("detail");
-      });
-    } else if (service_type === "full_service") {
-      packages = packages.filter(r => {
-        const pkg = (r.pkg || "").toLowerCase();
-        return pkg.includes("fs");
-      });
-    } else if (service_type === "professional_detailing") {
-      return jsonResponse(200, { packages: [], detailing: true });
+    // Group packages by service type based on pkg name patterns
+    const groups = {
+      express_exterior: [],
+      full_service: [],
+      professional_detailing: []
+    };
+
+    for (const r of packages) {
+      const pkg = (r.pkg || "").toLowerCase();
+      const item = {
+        pkg: r.pkg,
+        pretty_pkg: r.pretty_pkg || r.pkg,
+        price: r.single,
+        sort: Number(r.sort) || 99
+      };
+
+      if (pkg.includes("detail")) {
+        groups.professional_detailing.push(item);
+      } else if (pkg.includes("fs")) {
+        groups.full_service.push(item);
+      } else {
+        groups.express_exterior.push(item);
+      }
     }
 
-    // Sort by sort column
-    packages.sort((a, b) => (Number(a.sort) || 99) - (Number(b.sort) || 99));
+    // Sort each group by the sort column
+    for (const key of Object.keys(groups)) {
+      groups[key].sort((a, b) => a.sort - b.sort);
+    }
 
-    const result = packages.map(r => ({
-      pkg: r.pkg,
-      pretty_pkg: r.pretty_pkg || r.pkg
-    }));
-
-    return jsonResponse(200, { packages: result, detailing: false });
+    return jsonResponse(200, { groups });
 
   } catch (error) {
     console.error("handleFleetPackages error:", error);
@@ -186,16 +193,37 @@ async function handleFleetSubmit(request, env, ctx) {
     const data = await request.json();
 
     // Validate required fields
-    const required = ["company", "name", "phone", "email", "location_code", "service_type"];
+    const required = ["company", "name", "phone", "email", "location_code"];
     for (const field of required) {
       if (!data[field] || data[field].trim().length === 0) {
         return jsonResponse(400, { error: `Missing required field: ${field}` });
       }
     }
 
+    // Must select at least one package
+    if (!Array.isArray(data.selected_packages) || data.selected_packages.length === 0) {
+      return jsonResponse(400, { error: "Please select at least one package." });
+    }
+
     // Basic email validation
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
       return jsonResponse(400, { error: "Please enter a valid email address." });
+    }
+
+    // Determine service_type from selected package names
+    let hasExpress = false, hasFullServe = false, hasDetail = false;
+    for (const pkg of data.selected_packages) {
+      const lower = (pkg || "").toLowerCase();
+      if (lower.includes("detail")) hasDetail = true;
+      else if (lower.includes("fs")) hasFullServe = true;
+      else hasExpress = true;
+    }
+    const typesCount = (hasExpress ? 1 : 0) + (hasFullServe ? 1 : 0) + (hasDetail ? 1 : 0);
+    let serviceType = "mixed";
+    if (typesCount === 1) {
+      if (hasExpress) serviceType = "express_exterior";
+      else if (hasFullServe) serviceType = "full_service";
+      else if (hasDetail) serviceType = "professional_detailing";
     }
 
     const ipAddress = request.headers.get("CF-Connecting-IP") || "Unknown";
@@ -209,8 +237,8 @@ async function handleFleetSubmit(request, env, ctx) {
       address: (data.address || "").trim(),
       location_code: data.location_code,
       location_pretty: data.location_pretty || data.location_code,
-      service_type: data.service_type,
-      packages: data.packages || null,
+      service_type: serviceType,
+      packages: data.packages_pretty || data.selected_packages.join(", "),
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
       user_agent: userAgent,
@@ -301,11 +329,11 @@ async function getCachedPackageData(env, ctx) {
       return await cached.json();
     }
     if (cacheAge < STALE_TTL * 1000) {
-      ctx.waitUntil(fetchAndCacheData(env, cache, cacheKey, TABLE_PACKAGES, "location_code,pkg,pretty_pkg,sort", null));
+      ctx.waitUntil(fetchAndCacheData(env, cache, cacheKey, TABLE_PACKAGES, "location_code,pkg,pretty_pkg,single,sort", null));
       return await cached.json();
     }
   }
-  return await fetchAndCacheData(env, cache, cacheKey, TABLE_PACKAGES, "location_code,pkg,pretty_pkg,sort", cached);
+  return await fetchAndCacheData(env, cache, cacheKey, TABLE_PACKAGES, "location_code,pkg,pretty_pkg,single,sort", cached);
 }
 
 async function fetchAndCacheData(env, cache, cacheKey, table, select, fallback) {
@@ -819,6 +847,38 @@ function renderFleetForm() {
             display: block;
         }
 
+        .package-group {
+            margin-bottom: 20px;
+        }
+
+        .package-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .package-group-header {
+            font-size: 15px;
+            font-weight: 700;
+            color: #1e3a8a;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .package-group-note {
+            font-size: 13px;
+            color: #475569;
+            font-style: italic;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .package-price {
+            color: #64748b;
+            font-size: 13px;
+            font-weight: 500;
+            margin-left: 6px;
+        }
+
         .package-checkboxes {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -1010,18 +1070,10 @@ function renderFleetForm() {
                     <div id="locationCards"></div>
                 </div>
 
-                <!-- Service Type Selection -->
-                <div class="service-section" id="serviceSection">
-                    <div class="form-group">
-                        <label>Service Type <span class="required">*</span></label>
-                        <div class="service-options" id="serviceOptions"></div>
-                    </div>
-                </div>
-
-                <!-- Package Selection -->
+                <!-- Package Selection (grouped by service type) -->
                 <div class="package-section" id="packageSection">
                     <div class="form-group">
-                        <label>Select Package(s)</label>
+                        <label>Select Package(s) <span class="required">*</span></label>
                         <div id="packageContent"></div>
                     </div>
                 </div>
@@ -1047,8 +1099,8 @@ function renderFleetForm() {
     (function() {
         // State
         var selectedLocation = null;
-        var selectedService = null;
         var selectedPackages = [];
+        var allPackagesMap = {}; // pkg -> { pkg, pretty_pkg, price, group }
         var locationData = [];
 
         // Elements
@@ -1061,8 +1113,6 @@ function renderFleetForm() {
         var locationResults = document.getElementById('locationResults');
         var locationLoading = document.getElementById('locationLoading');
         var locationCards = document.getElementById('locationCards');
-        var serviceSection = document.getElementById('serviceSection');
-        var serviceOptions = document.getElementById('serviceOptions');
         var packageSection = document.getElementById('packageSection');
         var packageContent = document.getElementById('packageContent');
         var submitBtn = document.getElementById('submitBtn');
@@ -1151,9 +1201,7 @@ function renderFleetForm() {
         function searchLocations(payload) {
             // Reset downstream selections
             selectedLocation = null;
-            selectedService = null;
             selectedPackages = [];
-            serviceSection.classList.remove('show');
             packageSection.classList.remove('show');
 
             locationResults.classList.add('show');
@@ -1202,8 +1250,6 @@ function renderFleetForm() {
             // Click handlers
             locationCards.querySelectorAll('.location-card').forEach(function(card) {
                 card.addEventListener('click', function() {
-                    var wasSelected = this.classList.contains('selected');
-
                     // Reset and select this card
                     locationCards.querySelectorAll('.location-card').forEach(function(c) {
                         c.classList.remove('selected');
@@ -1229,9 +1275,7 @@ function renderFleetForm() {
                             });
                             changeLink.remove();
                             selectedLocation = null;
-                            selectedService = null;
                             selectedPackages = [];
-                            serviceSection.classList.remove('show');
                             packageSection.classList.remove('show');
                             validateForm();
                         });
@@ -1240,83 +1284,60 @@ function renderFleetForm() {
 
                     var idx = parseInt(this.getAttribute('data-index'));
                     selectedLocation = locationData[idx];
-                    selectedService = null;
                     selectedPackages = [];
-                    packageSection.classList.remove('show');
 
-                    showServiceOptions(selectedLocation);
+                    loadPackages(selectedLocation.location_code);
                     validateForm();
                 });
             });
         }
 
-        function showServiceOptions(location) {
-            var services = [
-                { id: 'express_exterior', name: 'Express Exterior', desc: 'Exterior wash packages' }
-            ];
-
-            if (location.has_full_service) {
-                services.push({ id: 'full_service', name: 'Full Service', desc: 'Interior & exterior packages' });
-            }
-
-            services.push({ id: 'professional_detailing', name: 'Professional Detailing', desc: 'A representative will contact you' });
-
-            serviceOptions.innerHTML = services.map(function(svc) {
-                return '<div class="service-card" data-service="' + svc.id + '">' +
-                    '<div class="service-name">' + svc.name + '</div>' +
-                    '<div class="service-desc">' + svc.desc + '</div>' +
-                '</div>';
-            }).join('');
-
-            serviceSection.classList.add('show');
-
-            // Click handlers
-            serviceOptions.querySelectorAll('.service-card').forEach(function(card) {
-                card.addEventListener('click', function() {
-                    serviceOptions.querySelectorAll('.service-card').forEach(function(c) { c.classList.remove('selected'); });
-                    this.classList.add('selected');
-
-                    selectedService = this.getAttribute('data-service');
-                    selectedPackages = [];
-                    loadPackages(selectedLocation.location_code, selectedService);
-                    validateForm();
-                });
-            });
-        }
-
-        function loadPackages(locationCode, serviceType) {
+        function loadPackages(locationCode) {
+            allPackagesMap = {};
             packageSection.classList.remove('show');
-
-            if (serviceType === 'professional_detailing') {
-                packageContent.innerHTML = '<div class="detailing-note">A Splash Car Wash representative will contact you to discuss professional detailing options and provide a custom quote for your fleet.</div>';
-                packageSection.classList.add('show');
-                validateForm();
-                return;
-            }
-
             packageContent.innerHTML = '<div class="loading">Loading packages...</div>';
             packageSection.classList.add('show');
 
             fetch('/api/fleet-packages', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ location_code: locationCode, service_type: serviceType })
+                body: JSON.stringify({ location_code: locationCode })
             })
             .then(function(resp) { return resp.json(); })
             .then(function(data) {
-                if (!data.packages || data.packages.length === 0) {
-                    packageContent.innerHTML = '<div class="detailing-note">No packages available for this service at this location.</div>';
+                if (!data.groups) {
+                    packageContent.innerHTML = '<div class="detailing-note">No packages available for this location.</div>';
                     return;
                 }
 
-                packageContent.innerHTML = '<div class="package-checkboxes">' +
-                    data.packages.map(function(pkg, i) {
-                        return '<div class="package-checkbox" data-pkg="' + escHtml(pkg.pkg) + '">' +
-                            '<input type="checkbox" id="pkg-' + i + '">' +
-                            '<label for="pkg-' + i + '">' + escHtml(pkg.pretty_pkg) + '</label>' +
-                        '</div>';
-                    }).join('') +
-                    '</div>';
+                var groupsHtml = '';
+                var totalPackages = 0;
+
+                // Express Exterior
+                if (data.groups.express_exterior && data.groups.express_exterior.length > 0) {
+                    groupsHtml += renderGroup('Express Exterior', null, data.groups.express_exterior, 'express');
+                    totalPackages += data.groups.express_exterior.length;
+                }
+
+                // Full Service (with info note)
+                if (data.groups.full_service && data.groups.full_service.length > 0) {
+                    var fsNote = 'Includes vacuuming, towel dry, window cleaning, and dash &amp; door jambs wiped down.';
+                    groupsHtml += renderGroup('Full Service', fsNote, data.groups.full_service, 'fullserve');
+                    totalPackages += data.groups.full_service.length;
+                }
+
+                // Professional Detailing
+                if (data.groups.professional_detailing && data.groups.professional_detailing.length > 0) {
+                    groupsHtml += renderGroup('Professional Detailing', null, data.groups.professional_detailing, 'detail');
+                    totalPackages += data.groups.professional_detailing.length;
+                }
+
+                if (totalPackages === 0) {
+                    packageContent.innerHTML = '<div class="detailing-note">No packages available for this location.</div>';
+                    return;
+                }
+
+                packageContent.innerHTML = groupsHtml;
 
                 // Click handlers for package checkboxes
                 packageContent.querySelectorAll('.package-checkbox').forEach(function(box) {
@@ -1339,6 +1360,27 @@ function renderFleetForm() {
             });
         }
 
+        function renderGroup(title, note, packages, groupKey) {
+            var html = '<div class="package-group">';
+            html += '<div class="package-group-header">' + escHtml(title) + '</div>';
+            if (note) {
+                html += '<div class="package-group-note">' + note + '</div>';
+            }
+            html += '<div class="package-checkboxes">';
+            packages.forEach(function(pkg, i) {
+                var checkboxId = 'pkg-' + groupKey + '-' + i;
+                // Store pretty name keyed by pkg for submission
+                allPackagesMap[pkg.pkg] = pkg;
+                var priceStr = pkg.price ? ' <span class="package-price">- $' + Number(pkg.price).toFixed(2) + ' retail</span>' : '';
+                html += '<div class="package-checkbox" data-pkg="' + escHtml(pkg.pkg) + '">' +
+                    '<input type="checkbox" id="' + checkboxId + '">' +
+                    '<label for="' + checkboxId + '">' + escHtml(pkg.pretty_pkg) + priceStr + '</label>' +
+                '</div>';
+            });
+            html += '</div></div>';
+            return html;
+        }
+
         function updateSelectedPackages() {
             selectedPackages = [];
             packageContent.querySelectorAll('input[type="checkbox"]:checked').forEach(function(cb) {
@@ -1355,7 +1397,7 @@ function renderFleetForm() {
             var phoneValid = phoneDigits.length === 10;
             var emailValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(emailInput.value.trim());
             var locationValid = selectedLocation !== null;
-            var serviceValid = selectedService !== null;
+            var packagesValid = selectedPackages.length > 0;
 
             // Show/hide errors only if field has content
             toggleError('err-company', !companyValid && companyInput.value.length > 0);
@@ -1363,7 +1405,7 @@ function renderFleetForm() {
             toggleError('err-phone', !phoneValid && phoneInput.value.length > 0);
             toggleError('err-email', !emailValid && emailInput.value.length > 0);
 
-            var formValid = companyValid && nameValid && phoneValid && emailValid && locationValid && serviceValid;
+            var formValid = companyValid && nameValid && phoneValid && emailValid && locationValid && packagesValid;
             submitBtn.disabled = !formValid;
             return formValid;
         }
@@ -1377,6 +1419,12 @@ function renderFleetForm() {
 
             var phoneDigits = phoneInput.value.replace(/\\D/g, '');
 
+            // Build pretty display string like "Express, Bath, Full Serve Works"
+            var prettyNames = selectedPackages.map(function(pkgKey) {
+                var info = allPackagesMap[pkgKey];
+                return info ? info.pretty_pkg : pkgKey;
+            });
+
             var payload = {
                 company: companyInput.value.trim(),
                 name: nameInput.value.trim(),
@@ -1385,8 +1433,8 @@ function renderFleetForm() {
                 address: addressInput.value.trim(),
                 location_code: selectedLocation.location_code,
                 location_pretty: selectedLocation.location_pretty,
-                service_type: selectedService,
-                packages: selectedService === 'professional_detailing' ? null : selectedPackages.length > 0 ? selectedPackages.join(', ') : null
+                selected_packages: selectedPackages,
+                packages_pretty: prettyNames.join(', ')
             };
 
             fetch('/api/fleet-submit', {
