@@ -341,6 +341,8 @@ async function handleFleetSubmit(request, env, ctx) {
       detailing_requested: detailingRequested,
       detailing_location_code: detailingRequested ? (data.detailing_location_code || null) : null,
       detailing_location_pretty: detailingRequested ? (data.detailing_location_pretty || null) : null,
+      number_of_vehicles: (typeof data.number_of_vehicles === "number" && data.number_of_vehicles >= 1) ? Math.floor(data.number_of_vehicles) : null,
+      anticipated_washes_per_month: (typeof data.anticipated_washes_per_month === "number" && data.anticipated_washes_per_month >= 1) ? Math.floor(data.anticipated_washes_per_month) : null,
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
       user_agent: userAgent,
@@ -986,6 +988,43 @@ function renderFleetForm() {
             display: block;
         }
 
+        .fleet-sizing-section {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .fleet-sizing-section.show {
+            display: block;
+        }
+
+        .field-helper {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        input[type="number"] {
+            width: 100%;
+            padding: 14px 16px;
+            font-size: 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            background: white;
+        }
+
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        input[type="number"].error {
+            border-color: #dc2626;
+        }
+
         .package-group {
             margin-bottom: 20px;
         }
@@ -1217,6 +1256,22 @@ function renderFleetForm() {
                     </div>
                 </div>
 
+                <!-- Fleet Sizing (shown after location is picked) -->
+                <div class="fleet-sizing-section" id="fleetSizingSection">
+                    <div class="form-group">
+                        <label>Number of Vehicles <span class="required">*</span></label>
+                        <input type="number" id="vehicleCount" placeholder="10" min="1" step="1">
+                        <div class="error-message" id="err-vehicles">Please enter a valid number of vehicles.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Anticipated Washes per Month <span class="required">*</span></label>
+                        <input type="number" id="washesPerMonth" placeholder="70" min="1" step="1">
+                        <div class="field-helper">Approximate total washes across your whole fleet per month — you don't need to commit to a number.</div>
+                        <div class="error-message" id="err-washes">Please enter a valid number of washes per month.</div>
+                    </div>
+                </div>
+
                 <!-- Submit -->
                 <button type="button" class="btn-submit" id="submitBtn" disabled>Submit Inquiry</button>
             </div>
@@ -1257,6 +1312,9 @@ function renderFleetForm() {
         var locationCards = document.getElementById('locationCards');
         var packageSection = document.getElementById('packageSection');
         var packageContent = document.getElementById('packageContent');
+        var fleetSizingSection = document.getElementById('fleetSizingSection');
+        var vehicleCountInput = document.getElementById('vehicleCount');
+        var washesPerMonthInput = document.getElementById('washesPerMonth');
         var submitBtn = document.getElementById('submitBtn');
         var successOverlay = document.getElementById('successOverlay');
         var useLocationBtn = document.getElementById('useLocationBtn');
@@ -1277,6 +1335,12 @@ function renderFleetForm() {
 
         // Input validation listeners
         [companyInput, nameInput, emailInput].forEach(function(input) {
+            input.addEventListener('input', validateForm);
+            input.addEventListener('blur', validateForm);
+        });
+
+        // Fleet sizing listeners
+        [vehicleCountInput, washesPerMonthInput].forEach(function(input) {
             input.addEventListener('input', validateForm);
             input.addEventListener('blur', validateForm);
         });
@@ -1347,6 +1411,7 @@ function renderFleetForm() {
             detailingRequested = false;
             detailingLocation = null;
             packageSection.classList.remove('show');
+            fleetSizingSection.classList.remove('show');
 
             locationResults.classList.add('show');
             locationLoading.style.display = 'block';
@@ -1424,6 +1489,7 @@ function renderFleetForm() {
                             detailingRequested = false;
                             detailingLocation = null;
                             packageSection.classList.remove('show');
+                            fleetSizingSection.classList.remove('show');
                             validateForm();
                         });
                         locationCards.appendChild(changeLink);
@@ -1446,6 +1512,7 @@ function renderFleetForm() {
             packageSection.classList.remove('show');
             packageContent.innerHTML = '<div class="loading">Loading packages...</div>';
             packageSection.classList.add('show');
+            fleetSizingSection.classList.add('show');
 
             var payload = { location_code: locationCode };
             if (userCoords) {
@@ -1593,13 +1660,22 @@ function renderFleetForm() {
             var locationValid = selectedLocation !== null;
             var packagesValid = selectedPackages.length > 0 || detailingRequested;
 
+            var vehicleCount = parseInt(vehicleCountInput.value, 10);
+            var vehiclesValid = !isNaN(vehicleCount) && vehicleCount >= 1;
+
+            var washesCount = parseInt(washesPerMonthInput.value, 10);
+            var washesValid = !isNaN(washesCount) && washesCount >= 1;
+
             // Show/hide errors only if field has content
             toggleError('err-company', !companyValid && companyInput.value.length > 0);
             toggleError('err-name', !nameValid && nameInput.value.length > 0);
             toggleError('err-phone', !phoneValid && phoneInput.value.length > 0);
             toggleError('err-email', !emailValid && emailInput.value.length > 0);
+            toggleError('err-vehicles', !vehiclesValid && vehicleCountInput.value.length > 0);
+            toggleError('err-washes', !washesValid && washesPerMonthInput.value.length > 0);
 
-            var formValid = companyValid && nameValid && phoneValid && emailValid && locationValid && packagesValid;
+            var formValid = companyValid && nameValid && phoneValid && emailValid &&
+                locationValid && packagesValid && vehiclesValid && washesValid;
             submitBtn.disabled = !formValid;
             return formValid;
         }
@@ -1642,7 +1718,9 @@ function renderFleetForm() {
                 packages_detail: packagesDetail,
                 detailing_requested: detailingRequested,
                 detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
-                detailing_location_code: detailingLocation ? detailingLocation.location_code : null
+                detailing_location_code: detailingLocation ? detailingLocation.location_code : null,
+                number_of_vehicles: parseInt(vehicleCountInput.value, 10),
+                anticipated_washes_per_month: parseInt(washesPerMonthInput.value, 10)
             };
 
             fetch('/api/fleet-submit', {
