@@ -515,6 +515,20 @@ async function fetchAndCacheData(env, cache, cacheKey, table, select, fallback) 
 /* ===================== Google Maps Helpers ===================== */
 
 async function geocodeAddress(address, apiKey) {
+  if (!address || !apiKey) return null;
+
+  // Cache key: hash of the address so we get one cache entry per unique address
+  const cache = caches.default;
+  const cacheKey = new Request(`https://internal-cache/geocode/${encodeURIComponent(address)}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    try {
+      return await cached.json();
+    } catch (_) {
+      // Fall through to re-fetch if cache is corrupted
+    }
+  }
+
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`;
     const response = await fetch(url);
@@ -522,7 +536,18 @@ async function geocodeAddress(address, apiKey) {
 
     if (data.status === "OK" && data.results.length > 0) {
       const { lat, lng } = data.results[0].geometry.location;
-      return { lat, lng };
+      const coords = { lat, lng };
+
+      // Cache the result for 7 days (addresses rarely move)
+      const cacheResponse = new Response(JSON.stringify(coords), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=604800"
+        }
+      });
+      await cache.put(cacheKey, cacheResponse);
+
+      return coords;
     }
     return null;
   } catch (error) {
