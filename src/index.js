@@ -341,7 +341,7 @@ async function handleFleetSubmit(request, env, ctx) {
       detailing_requested: detailingRequested,
       detailing_location_code: detailingRequested ? (data.detailing_location_code || null) : null,
       detailing_location_pretty: detailingRequested ? (data.detailing_location_pretty || null) : null,
-      vehicle_count: (typeof data.vehicle_count === "number" && data.vehicle_count >= 1) ? Math.floor(data.vehicle_count) : null,
+      number_of_vehicles: (typeof data.number_of_vehicles === "number" && data.number_of_vehicles >= 1) ? Math.floor(data.number_of_vehicles) : null,
       anticipated_washes_per_month: (typeof data.anticipated_washes_per_month === "number" && data.anticipated_washes_per_month >= 1) ? Math.floor(data.anticipated_washes_per_month) : null,
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
@@ -1719,7 +1719,7 @@ function renderFleetForm() {
                 detailing_requested: detailingRequested,
                 detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
                 detailing_location_code: detailingLocation ? detailingLocation.location_code : null,
-                vehicle_count: parseInt(vehicleCountInput.value, 10),
+                number_of_vehicles: parseInt(vehicleCountInput.value, 10),
                 anticipated_washes_per_month: parseInt(washesPerMonthInput.value, 10)
             };
 
