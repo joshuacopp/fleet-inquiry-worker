@@ -341,7 +341,7 @@ async function handleFleetSubmit(request, env, ctx) {
       detailing_requested: detailingRequested,
       detailing_location_code: detailingRequested ? (data.detailing_location_code || null) : null,
       detailing_location_pretty: detailingRequested ? (data.detailing_location_pretty || null) : null,
-      number_of_vehicles: (typeof data.number_of_vehicles === "number" && data.number_of_vehicles >= 1) ? Math.floor(data.number_of_vehicles) : null,
+      vehicle_count: (typeof data.vehicle_count === "number" && data.vehicle_count >= 1) ? Math.floor(data.vehicle_count) : null,
       anticipated_washes_per_month: (typeof data.anticipated_washes_per_month === "number" && data.anticipated_washes_per_month >= 1) ? Math.floor(data.anticipated_washes_per_month) : null,
       submitted_at: new Date().toISOString(),
       ip_address: ipAddress,
@@ -572,7 +572,7 @@ function renderFleetForm() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/png" href="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/SplashScriptWhite_RedCar.png">
+    <link rel="icon" type="image/png" href="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/favicon-32x32.png">
     <title>Splash Car Wash - Fleet Pricing Inquiry</title>
     <style>
         * {
@@ -1194,7 +1194,7 @@ function renderFleetForm() {
     <div class="scroll-wrapper">
         <div class="container">
             <div class="header">
-                <img src="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/Splash_logo_full (1) 1.png" alt="Splash Car Wash" class="logo">
+                <img src="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/SplashScriptWhite_RedCar.png" alt="Splash Car Wash" class="logo">
                 <div class="page-title">Fleet Pricing Inquiry</div>
                 <div class="page-subtitle">Get a custom quote for your fleet</div>
             </div>
@@ -1719,7 +1719,7 @@ function renderFleetForm() {
                 detailing_requested: detailingRequested,
                 detailing_location_pretty: detailingLocation ? detailingLocation.location_pretty : null,
                 detailing_location_code: detailingLocation ? detailingLocation.location_code : null,
-                number_of_vehicles: parseInt(vehicleCountInput.value, 10),
+                vehicle_count: parseInt(vehicleCountInput.value, 10),
                 anticipated_washes_per_month: parseInt(washesPerMonthInput.value, 10)
             };
 
