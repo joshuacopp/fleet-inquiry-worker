@@ -20,5 +20,11 @@
 	},
 	"limits": {
 		"cpu_ms": 30000
-	}
+	},
+	"routes": [
+		{
+			"pattern": "fleet.splashcarwashes.info",
+			"custom_domain": true
+		}
+	]
 }
