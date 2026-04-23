@@ -773,7 +773,7 @@ function renderFleetForm(env) {
             padding: 16px 18px;
             margin-bottom: 24px;
             color: #1e3a8a;
-            font-size: 14px;
+            font-size: 18px;
             line-height: 1.6;
             border-radius: 6px;
         }
@@ -1272,7 +1272,7 @@ function renderFleetForm(env) {
             <div class="form-content">
                 <!-- Intro description -->
                 <div class="intro-description">
-                    Splash believes in community, and works hard to build relationships with local not-for-profit organizations, government agencies and private businesses. To this end, we offer special money saving per-wash pricing to fleets, so you can spend more of your money where it matters most for your group. To get started saving with Splash, complete the form below for a personalized quote, and a call from one of our fleet specialists.
+                    Splash believes in community and works hard to build relationships with local not-for-profit organizations, government agencies and private businesses. To this end, we offer special money saving per-wash pricing to fleets, so you can spend more of your money where it matters most for your group. To get started saving with Splash, complete the form below for a personalized quote, and a call from one of our fleet specialists.
                 </div>
 
                 <!-- Company Info -->
