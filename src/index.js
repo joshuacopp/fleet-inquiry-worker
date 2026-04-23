@@ -1330,15 +1330,15 @@ function renderFleetForm(env) {
                 <div class="fleet-sizing-section" id="fleetSizingSection">
                     <div class="form-group">
                         <label>Number of Vehicles <span class="required">*</span></label>
-                        <input type="number" id="vehicleCount" placeholder="10" min="1" step="1">
+                        <input type="number" id="vehicleCount" placeholder="ie. 10" min="1" step="1">
                         <div class="error-message" id="err-vehicles">Please enter a valid number of vehicles.</div>
                     </div>
 
                     <div class="form-group">
                         <label>Anticipated Washes per Month <span class="required">*</span></label>
-                        <input type="number" id="washesPerMonth" placeholder="70" min="1" step="1">
-                        <div class="field-helper">Approximate total washes across your whole fleet per month — you don't need to commit to a number.</div>
-                        <div class="error-message" id="err-washes">Please enter a valid number of washes per month.</div>
+                        <input type="number" id="washesPerMonth" placeholder="Minimum of 30" min="30" step="1">
+                        <div class="field-helper">Estimated washes per month for whole fleet, you don't need to commit to a number.  Must be greater than 30 to qualify for fleet discounts. </div>
+                        <div class="error-message" id="err-washes">Must be at least 30 washes per month to qualify for fleet pricing.</div>
                     </div>
                 </div>
 
@@ -1775,7 +1775,7 @@ function renderFleetForm(env) {
             var vehiclesValid = !isNaN(vehicleCount) && vehicleCount >= 1;
 
             var washesCount = parseInt(washesPerMonthInput.value, 10);
-            var washesValid = !isNaN(washesCount) && washesCount >= 1;
+            var washesValid = !isNaN(washesCount) && washesCount >= 30;
 
             var turnstileValid = !!turnstileToken;
 
